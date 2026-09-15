@@ -46,7 +46,7 @@ void EcmwfProvider::startDownload(const GribRequestParams &params)
     else cycleHour = "00";
     cycleDate = now.toString("yyyyMMdd");
 
-    if (params.cycle != "" && params.cycle != "last") {
+    if (params.cycle != "" && params.cycle.toLower() != "last") {
         cycleHour = params.cycle;
         if (cycleHour.length() == 1) cycleHour = "0" + cycleHour;
     }

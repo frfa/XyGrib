@@ -5,6 +5,7 @@ XyGrib: meteorological GRIB file viewer
 #include "DwdIconProvider.h"
 #include "Util.h"
 #include <bzlib.h>
+#include <cstdio>
 #include <QDebug>
 
 DwdIconProvider::DwdIconProvider(QNetworkAccessManager *manager, QObject *parent)
@@ -72,10 +73,14 @@ void DwdIconProvider::startDownload(const GribRequestParams &params)
     if (hourUtc >= 21) cycleHour = "18";
     else if (hourUtc >= 15) cycleHour = "12";
     else if (hourUtc >= 9) cycleHour = "06";
-    else cycleHour = "00";
+    else if (hourUtc >= 3) cycleHour = "00";
+    else {
+        cycleHour = "18";
+        now = now.addDays(-1);
+    }
     cycleDate = now.toString("yyyyMMdd");
 
-    if (params.cycle != "" && params.cycle != "last") {
+    if (params.cycle != "" && params.cycle.toLower() != "last") {
         cycleHour = params.cycle;
         if (cycleHour.length() == 1) cycleHour = "0" + cycleHour;
     }
@@ -101,7 +106,7 @@ void DwdIconProvider::processNextFile()
 
     if (currentStepIndex >= forecastHours.size()) {
         if (accumulatedGribData.isEmpty()) {
-            emit signalGribLoadError(tr("No DWD ICON data could be downloaded."));
+            emit signalGribLoadError(tr("No DWD ICON data could be downloaded. Check selected cycle/date."));
             return;
         }
 
@@ -122,24 +127,26 @@ void DwdIconProvider::processNextFile()
     QString param = requestedParams[currentParamIndex];
 
     bool isEu = (requestParams.atmModel == "ICON-EU");
-    QString modelStr = isEu ? "icon-eu" : "icon";
-    QString domainStr = isEu ? "europe_regular-lat-lon" : "global_regular-lat-lon";
+    QString modelFolder = isEu ? "icon-eu" : "icon";
+    QString filePrefix = isEu ? "icon-eu_europe_regular-lat-lon" : "icon_global_icosahedral";
     QString levelType = "single-level";
     QString hourStr = QString("%1").arg(hour, 3, 10, QChar('0'));
     QString paramUpper = param.toUpper();
 
-    // DWD URL pattern:
-    // https://opendata.dwd.de/weather/nwp/icon-eu/grib/HH/param/icon-eu_europe_regular-lat-lon_single-level_YYYYMMDDHH_FFF_PARAM.grib2.bz2
-    QString urlStr = QString("https://opendata.dwd.de/weather/nwp/%1/grib/%2/%3/%4_%5_%6_%7%2_%8_%9.grib2.bz2")
-                         .arg(modelStr)
+    // Explicit two-stage URL formatting to prevent QString::arg() placeholder collisions
+    QString fileNameStr = QString("%1_%2_%3%4_%5_%6.grib2.bz2")
+                              .arg(filePrefix)
+                              .arg(levelType)
+                              .arg(cycleDate)
+                              .arg(cycleHour)
+                              .arg(hourStr)
+                              .arg(paramUpper);
+
+    QString urlStr = QString("https://opendata.dwd.de/weather/nwp/%1/grib/%2/%3/%4")
+                         .arg(modelFolder)
                          .arg(cycleHour)
                          .arg(param)
-                         .arg(modelStr)
-                         .arg(domainStr)
-                         .arg(levelType)
-                         .arg(cycleDate)
-                         .arg(hourStr)
-                         .arg(paramUpper);
+                         .arg(fileNameStr);
 
     int totalFiles = forecastHours.size() * requestedParams.size();
     int currentFileNum = currentStepIndex * requestedParams.size() + currentParamIndex + 1;
@@ -162,16 +169,23 @@ void DwdIconProvider::slotFileFinished()
 {
     if (isAborted) return;
 
-    if (currentReply && currentReply->error() == QNetworkReply::NoError) {
-        QByteArray bz2Data = currentReply->readAll();
-        QByteArray decompressed = decompressBz2(bz2Data);
-        if (!decompressed.isEmpty()) {
-            accumulatedGribData.append(decompressed);
+    if (currentReply) {
+        if (currentReply->error() == QNetworkReply::NoError) {
+            QByteArray bz2Data = currentReply->readAll();
+            QByteArray decompressed = decompressBz2(bz2Data);
+            if (!decompressed.isEmpty()) {
+                accumulatedGribData.append(decompressed);
+                emit signalGribReadProgress(2, accumulatedGribData.size(), accumulatedGribData.size() + 1024);
+            }
+        } else {
+            fprintf(stderr, "[DWD ICON Warning] %s returned HTTP %d (%s)\n",
+                    qPrintable(currentReply->url().toString()),
+                    currentReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(),
+                    qPrintable(currentReply->errorString()));
         }
+        currentReply->deleteLater();
+        currentReply = nullptr;
     }
-
-    currentReply->deleteLater();
-    currentReply = nullptr;
 
     currentParamIndex++;
     processNextFile();
@@ -181,7 +195,7 @@ QByteArray DwdIconProvider::decompressBz2(const QByteArray &compressedData)
 {
     if (compressedData.isEmpty()) return QByteArray();
 
-    unsigned int uncompressedLen = compressedData.size() * 10 + 1024;
+    unsigned int uncompressedLen = compressedData.size() * 15 + 100000;
     QByteArray uncompressed;
     uncompressed.resize(uncompressedLen);
 
@@ -190,7 +204,7 @@ QByteArray DwdIconProvider::decompressBz2(const QByteArray &compressedData)
                                          compressedData.size(), 0, 0);
 
     if (ret == BZ_OUTBUFF_FULL) {
-        uncompressedLen = compressedData.size() * 30;
+        uncompressedLen = compressedData.size() * 50 + 500000;
         uncompressed.resize(uncompressedLen);
         ret = BZ2_bzBuffToBuffDecompress(uncompressed.data(), &uncompressedLen,
                                          const_cast<char*>(compressedData.constData()),
@@ -202,5 +216,6 @@ QByteArray DwdIconProvider::decompressBz2(const QByteArray &compressedData)
         return uncompressed;
     }
 
+    fprintf(stderr, "[DWD ICON Error] bzip2 decompression failed, error code %d\n", ret);
     return QByteArray();
 }

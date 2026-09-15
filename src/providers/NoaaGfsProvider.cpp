@@ -68,7 +68,7 @@ void NoaaGfsProvider::resolveCycleAndStart()
 {
     if (isAborted) return;
 
-    if (requestParams.cycle != "" && requestParams.cycle != "last") {
+    if (requestParams.cycle != "" && requestParams.cycle.toLower() != "last") {
         cycleHour = requestParams.cycle;
         if (cycleHour.length() == 1) cycleHour = "0" + cycleHour;
         cycleDate = QDateTime::currentDateTimeUtc().toString("yyyyMMdd");
