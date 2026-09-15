@@ -8,6 +8,7 @@
 g2int simunpack(unsigned char *,g2int *, g2int,g2float *);
 int comunpack(unsigned char *,g2int,g2int,g2int *,g2int,g2float *);
 g2int specunpack(unsigned char *,g2int *,g2int,g2int,g2int, g2int, g2float *);
+g2int aecunpack(unsigned char *,g2int,g2int *,g2int,g2float *);
 #ifdef USE_PNG
   g2int pngunpack(unsigned char *,g2int,g2int *,g2int, g2float *);
 #endif  /* USE_PNG */
@@ -198,6 +199,14 @@ g2int g2_unpack7(unsigned char *cgrib,g2int *iofst,g2int igdsnum,g2int *igdstmpl
         pngunpack(cgrib+ipos,lensec-5,idrstmpl,ndpts,lfld);
         }
 #endif  /* USE_PNG */
+      else if (idrsnum == 42) {
+        if (aecunpack(cgrib+ipos,lensec-5,idrstmpl,ndpts,lfld) != 0) {
+          ierr=7;
+          free(lfld);
+          *fld=0;     //NULL
+          return(ierr);
+        }
+      }
       else {
         fprintf(stderr,"g2_unpack7: Data Representation Template 5.%d not yet implemented.\n",(int)idrsnum);
         ierr=4;

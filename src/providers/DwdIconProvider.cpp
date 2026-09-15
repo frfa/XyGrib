@@ -7,12 +7,15 @@ XyGrib: meteorological GRIB file viewer
 #include <bzlib.h>
 #include <cstdio>
 #include <QDebug>
+#include <QRegularExpression>
+#include <QRegularExpressionMatch>
 
 DwdIconProvider::DwdIconProvider(QNetworkAccessManager *manager, QObject *parent)
     : AbstractGribProvider(manager, parent),
       currentStepIndex(0),
       currentParamIndex(0),
-      currentReply(nullptr)
+      currentReply(nullptr),
+      probeReply(nullptr)
 {
 }
 
@@ -22,6 +25,10 @@ DwdIconProvider::~DwdIconProvider()
         currentReply->deleteLater();
         currentReply = nullptr;
     }
+    if (probeReply) {
+        probeReply->deleteLater();
+        probeReply = nullptr;
+    }
 }
 
 void DwdIconProvider::stop()
@@ -29,6 +36,9 @@ void DwdIconProvider::stop()
     AbstractGribProvider::stop();
     if (currentReply) {
         currentReply->abort();
+    }
+    if (probeReply) {
+        probeReply->abort();
     }
 }
 
@@ -68,33 +78,140 @@ void DwdIconProvider::startDownload(const GribRequestParams &params)
     currentStepIndex = 0;
     currentParamIndex = 0;
 
-    QDateTime now = QDateTime::currentDateTimeUtc();
-    int hourUtc = now.time().hour();
-    if (hourUtc >= 21) cycleHour = "18";
-    else if (hourUtc >= 15) cycleHour = "12";
-    else if (hourUtc >= 9) cycleHour = "06";
-    else if (hourUtc >= 3) cycleHour = "00";
-    else {
-        cycleHour = "18";
-        now = now.addDays(-1);
+    // ICON Global uses an icosahedral unstructured grid with CCSDS compression
+    // (DRS Template 5.42) which is not supported by XyGrib's GRIB reader.
+    // Only ICON-EU is provided on a regular lat-lon grid compatible with XyGrib.
+    if (requestParams.atmModel == "ICON") {
+        emit signalGribLoadError(tr(
+            "DWD ICON Global uses an icosahedral unstructured grid and CCSDS "
+            "compression (DRS Template 5.42) which cannot be displayed by XyGrib.\n\n"
+            "Please select 'ICON-EU' instead for European coverage on a regular "
+            "lat-lon grid."));
+        return;
     }
-    cycleDate = now.toString("yyyyMMdd");
 
+    // ICON-EU runs every 3 hours: 00, 03, 06, 09, 12, 15, 18, 21 UTC
+    // Files become available approximately 2-2.5 hours after the run time.
     if (params.cycle != "" && params.cycle.toLower() != "last") {
         cycleHour = params.cycle;
         if (cycleHour.length() == 1) cycleHour = "0" + cycleHour;
+        // Determine date based on requested cycle
+        QDateTime now = QDateTime::currentDateTimeUtc();
+        cycleDate = now.toString("yyyyMMdd");
+        // If cycle hour > current hour, use previous day
+        if (cycleHour.toInt() > now.time().hour()) {
+            cycleDate = now.addDays(-1).toString("yyyyMMdd");
+        }
+        buildForecastHoursAndStart();
+    } else {
+        // Auto-detect: probe the server for the latest available run
+        emit signalGribSendMessage(tr("Detecting latest DWD ICON-EU cycle..."));
+        probeForLatestCycle();
+    }
+}
+
+void DwdIconProvider::probeForLatestCycle()
+{
+    // ICON-EU is published approximately 2.5 hours after the run time.
+    // Build a list of candidate (date, cycleHour) pairs, most recent first,
+    // going back up to 2 days to cover all likely scenarios.
+    QDateTime now = QDateTime::currentDateTimeUtc();
+
+    probeCandidates.clear();
+    for (int i = 0; i < 20; i++) {
+        // Step back i * 3 hours from now
+        QDateTime t = now.addSecs((qint64)(-i) * 3 * 3600);
+        // Round down to nearest 3h boundary
+        int ch = (t.time().hour() / 3) * 3;
+        QDateTime cycleTime = QDateTime(t.date(), QTime(ch, 0, 0), Qt::UTC);
+        QString cDate = cycleTime.toString("yyyyMMdd");
+        QString cHour = QString("%1").arg(ch, 2, 10, QChar('0'));
+        QPair<QString,QString> candidate(cDate, cHour);
+        if (!probeCandidates.contains(candidate)) {
+            probeCandidates.append(candidate);
+        }
     }
 
+    probeNextCandidate();
+}
+
+void DwdIconProvider::probeNextCandidate()
+{
+    if (isAborted) return;
+    if (probeCandidates.isEmpty()) {
+        emit signalGribLoadError(tr("Could not determine latest DWD ICON-EU cycle. "
+                                    "The DWD server may be updating. Please try again in a few minutes."));
+        return;
+    }
+
+    auto candidate = probeCandidates.first();
+    probeCandidates.removeFirst();
+
+    QString probeDate = candidate.first;
+    QString probeHour = candidate.second;
+
+    // Probe for PMSL hour 000 of this cycle
+    QString probeUrl = QString("https://opendata.dwd.de/weather/nwp/icon-eu/grib/%1/pmsl/"
+                               "icon-eu_europe_regular-lat-lon_single-level_%2%3_000_PMSL.grib2.bz2")
+                           .arg(probeHour)
+                           .arg(probeDate)
+                           .arg(probeHour);
+
+    emit signalGribSendMessage(tr("Probing DWD ICON-EU %1z %2...").arg(probeHour).arg(probeDate));
+
+    QNetworkRequest request = Util::makeNetworkRequest(probeUrl);
+    request.setAttribute(QNetworkRequest::User, QVariant::fromValue(QPair<QString,QString>(probeDate, probeHour)));
+    // Use HEAD request to avoid downloading the full file
+    if (probeReply) probeReply->deleteLater();
+    probeReply = networkManager->head(request);
+    connect(probeReply, SIGNAL(finished()), this, SLOT(slotProbeFinished()));
+}
+
+void DwdIconProvider::slotProbeFinished()
+{
+    if (isAborted) return;
+
+    if (!probeReply) return;
+
+    bool found = (probeReply->error() == QNetworkReply::NoError);
+    // Extract the candidate info from the request URL
+    QString urlStr = probeReply->url().toString();
+    // Parse date and hour from URL
+    QRegularExpression re("single-level_(\\d{8})(\\d{2})_000");
+    QRegularExpressionMatch m = re.match(urlStr);
+
+    probeReply->deleteLater();
+    probeReply = nullptr;
+
+    if (found && m.hasMatch()) {
+        cycleDate = m.captured(1);
+        cycleHour = m.captured(2);
+        buildForecastHoursAndStart();
+    } else {
+        probeNextCandidate();
+    }
+}
+
+void DwdIconProvider::buildForecastHoursAndStart()
+{
     forecastHours.clear();
-    int maxHours = params.days * 24;
-    int stepInt = params.interval > 0 ? params.interval : 3;
-    for (int h = 0; h <= maxHours; h += stepInt) {
+    int maxHours = requestParams.days * 24;
+    // ICON-EU provides hourly steps up to +78h, 3-hourly beyond
+    int stepInt = requestParams.interval > 0 ? requestParams.interval : 1;
+    for (int h = 0; h <= maxHours && h <= 78; h += stepInt) {
         forecastHours.append(h);
+    }
+    // If interval allows and we want beyond 78h, ICON-EU only goes to 120h at 3h steps
+    if (maxHours > 78 && stepInt <= 3) {
+        for (int h = 81; h <= qMin(maxHours, 120); h += 3) {
+            if (!forecastHours.contains(h)) forecastHours.append(h);
+        }
     }
 
     requestedParams = buildParamList();
 
-    emit signalGribSendMessage(tr("Starting DWD ICON download (%1z cycle)...").arg(cycleHour));
+    emit signalGribSendMessage(tr("Starting DWD ICON-EU download (%1z cycle, %2)...")
+                                   .arg(cycleHour).arg(cycleDate));
     emit signalGribStartLoadData();
 
     processNextFile();
@@ -106,12 +223,13 @@ void DwdIconProvider::processNextFile()
 
     if (currentStepIndex >= forecastHours.size()) {
         if (accumulatedGribData.isEmpty()) {
-            emit signalGribLoadError(tr("No DWD ICON data could be downloaded. Check selected cycle/date."));
+            emit signalGribLoadError(tr("No DWD ICON-EU data could be downloaded. "
+                                        "Check selected cycle/date or try again later."));
             return;
         }
 
-        QString outFileName = QString("icon_%1_%2z.grb2").arg(cycleDate).arg(cycleHour);
-        emit signalGribSendMessage(tr("Finished downloading %1 KB").arg(accumulatedGribData.size() / 1024));
+        QString outFileName = QString("icon-eu_%1_%2z.grb2").arg(cycleDate).arg(cycleHour);
+        emit signalGribSendMessage(tr("ICON-EU download complete: %1 KB").arg(accumulatedGribData.size() / 1024));
         emit signalGribDataReceived(&accumulatedGribData, outFileName);
         return;
     }
@@ -126,35 +244,28 @@ void DwdIconProvider::processNextFile()
     int hour = forecastHours[currentStepIndex];
     QString param = requestedParams[currentParamIndex];
 
-    bool isEu = (requestParams.atmModel == "ICON-EU");
-    QString modelFolder = isEu ? "icon-eu" : "icon";
-    QString filePrefix = isEu ? "icon-eu_europe_regular-lat-lon" : "icon_global_icosahedral";
-    QString levelType = "single-level";
+    // ICON-EU: always regular-lat-lon
     QString hourStr = QString("%1").arg(hour, 3, 10, QChar('0'));
     QString paramUpper = param.toUpper();
 
-    // Explicit two-stage URL formatting to prevent QString::arg() placeholder collisions
-    QString fileNameStr = QString("%1_%2_%3%4_%5_%6.grib2.bz2")
-                              .arg(filePrefix)
-                              .arg(levelType)
+    QString fileNameStr = QString("icon-eu_europe_regular-lat-lon_single-level_%1%2_%3_%4.grib2.bz2")
                               .arg(cycleDate)
                               .arg(cycleHour)
                               .arg(hourStr)
                               .arg(paramUpper);
 
-    QString urlStr = QString("https://opendata.dwd.de/weather/nwp/%1/grib/%2/%3/%4")
-                         .arg(modelFolder)
+    QString urlStr = QString("https://opendata.dwd.de/weather/nwp/icon-eu/grib/%1/%2/%3")
                          .arg(cycleHour)
                          .arg(param)
                          .arg(fileNameStr);
 
     int totalFiles = forecastHours.size() * requestedParams.size();
     int currentFileNum = currentStepIndex * requestedParams.size() + currentParamIndex + 1;
-    emit signalGribSendMessage(tr("Fetching DWD ICON [%1/%2] +%3h %4...")
-                                  .arg(currentFileNum)
-                                  .arg(totalFiles)
-                                  .arg(hour)
-                                  .arg(paramUpper));
+    emit signalGribSendMessage(tr("Fetching DWD ICON-EU [%1/%2] +%3h %4...")
+                                   .arg(currentFileNum)
+                                   .arg(totalFiles)
+                                   .arg(hour)
+                                   .arg(paramUpper));
     emit signalGribReadProgress(1, currentFileNum, totalFiles);
 
     QNetworkRequest request = Util::makeNetworkRequest(urlStr);
@@ -178,10 +289,14 @@ void DwdIconProvider::slotFileFinished()
                 emit signalGribReadProgress(2, accumulatedGribData.size(), accumulatedGribData.size() + 1024);
             }
         } else {
-            fprintf(stderr, "[DWD ICON Warning] %s returned HTTP %d (%s)\n",
-                    qPrintable(currentReply->url().toString()),
-                    currentReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(),
-                    qPrintable(currentReply->errorString()));
+            int httpCode = currentReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            // 404 at hour=0 is unusual; for later hours it can mean the step doesn't exist
+            if (httpCode != 404) {
+                fprintf(stderr, "[DWD ICON-EU Warning] %s returned HTTP %d (%s)\n",
+                        qPrintable(currentReply->url().toString()),
+                        httpCode,
+                        qPrintable(currentReply->errorString()));
+            }
         }
         currentReply->deleteLater();
         currentReply = nullptr;
@@ -216,6 +331,6 @@ QByteArray DwdIconProvider::decompressBz2(const QByteArray &compressedData)
         return uncompressed;
     }
 
-    fprintf(stderr, "[DWD ICON Error] bzip2 decompression failed, error code %d\n", ret);
+    fprintf(stderr, "[DWD ICON-EU Error] bzip2 decompression failed, error code %d\n", ret);
     return QByteArray();
 }

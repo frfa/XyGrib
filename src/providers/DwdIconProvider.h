@@ -8,6 +8,7 @@ XyGrib: meteorological GRIB file viewer
 #include "AbstractGribProvider.h"
 #include <QVector>
 #include <QStringList>
+#include <QPair>
 
 class DwdIconProvider : public AbstractGribProvider
 {
@@ -22,15 +23,20 @@ public:
 
 private slots:
     void slotFileFinished();
+    void slotProbeFinished();
 
 private:
     void processNextFile();
     QStringList buildParamList();
     QByteArray decompressBz2(const QByteArray &compressedData);
 
+    void probeForLatestCycle();
+    void probeNextCandidate();
+    void buildForecastHoursAndStart();
+
     GribRequestParams requestParams;
     QString cycleDate; // YYYYMMDD
-    QString cycleHour; // 00, 06, 12, 18
+    QString cycleHour; // 00, 03, 06, 09, 12, 15, 18, 21
     int currentStepIndex;
     int currentParamIndex;
     QVector<int> forecastHours;
@@ -38,6 +44,10 @@ private:
 
     QByteArray accumulatedGribData;
     QNetworkReply *currentReply;
+    QNetworkReply *probeReply;
+
+    // For probing latest available cycle
+    QList<QPair<QString,QString>> probeCandidates; // (date, hour)
 };
 
 #endif // DWD_ICON_PROVIDER_H

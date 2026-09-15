@@ -53,10 +53,14 @@ seekgb.c
 simunpack.c
 #specpack.c
 specunpack.c
+aecunpack.c
 )
 
 add_library(g2clib STATIC ${G2CLIB_SRCS})
 
-target_include_directories (g2clib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(g2clib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-ADD_DEFINITIONS(-DUSE_PNG -DUSE_OPENJPEG -DUSE_JPEG2000 )
+# dlopen/dlsym needed for dynamic libaec loading in aecunpack.c
+target_link_libraries(g2clib ${CMAKE_DL_LIBS})
+
+ADD_DEFINITIONS(-DUSE_PNG -DUSE_OPENJPEG -DUSE_JPEG2000)
