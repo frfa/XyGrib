@@ -26,6 +26,12 @@ DialogServerStatus.h
 DialogUnits.h
 FileLoader.h
 FileLoaderGRIB.h
+providers/AbstractGribProvider.h
+providers/NoaaGfsProvider.h
+providers/DwdIconProvider.h
+providers/EcmwfProvider.h
+providers/MeteoFranceProvider.h
+providers/LegacyProxyProvider.h
 Grib2Record.h
 GribAnimator.h
 GribPlot.h
@@ -75,6 +81,12 @@ DialogSelectMetar.cpp
 DialogServerStatus.cpp
 DialogUnits.cpp
 FileLoaderGRIB.cpp
+providers/AbstractGribProvider.cpp
+providers/NoaaGfsProvider.cpp
+providers/DwdIconProvider.cpp
+providers/EcmwfProvider.cpp
+providers/MeteoFranceProvider.cpp
+providers/LegacyProxyProvider.cpp
 Grib2Record.cpp
 GribAnimator.cpp
 GribPlot.cpp
@@ -115,6 +127,7 @@ install(TARGETS
     BUNDLE DESTINATION ${PREFIX_BIN} RUNTIME DESTINATION ${PREFIX_BIN} PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/util)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/providers)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/map ${MAP_GENERATED_HEADERS})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/GUI ${GUI_GENERATED_HEADERS})
 

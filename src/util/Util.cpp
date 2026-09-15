@@ -106,9 +106,7 @@ QString Util::getOpenFileName (QWidget *parent, const QString &caption,
 //------------------------------------------------------------
 QString Util::getServerName ()
 {
-    //return "www.zygrib.org";
-    //return "localhost:8081";/// ofer local tests
-    return "grbsrv.opengribs.org"; //https://grbsrv.opengribs.org
+    return Util::getSetting("legacyProxyServerHost", "grbsrv.opengribs.org").toString();
 }
 //------------------------------------------------------------
 void Util::setApplicationProxy ()

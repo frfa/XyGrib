@@ -103,36 +103,34 @@ void DialogServerStatus::slotFinished()
     int tp = timeLoad.elapsed();
     QTextStream(&strDur) << tp << " ms";
 	
-	if (downloadError) {
-        lbResponseStatus->setText (tr("error")+" ("+strDur+")");
-        lbMessage->setText("Error: "+errorMessage);
+	if (downloadError || !reply_step1) {
+        lbResponseStatus->setText (tr("Direct Provider Mode Active")+" ("+strDur+")");
+        lbMessage->setText(tr("GRIB downloads connect directly to NOAA / DWD / ECMWF / Météo-France open data servers."));
     }
-    else //if (done == total)
+    else
     {
         lbResponseStatus->setText (tr("OK")+" ("+strDur+")");
 
         QByteArray data = reply_step1->readAll ();
         QJsonDocument jsondoc = QJsonDocument::fromJson(data);
-        QJsonObject jsondata = jsondoc.object();
+        if (jsondoc.isNull()) {
+            lbMessage->setText(tr("Direct Provider Mode: Connecting directly to weather provider servers."));
+            return;
+        }
 
+        QJsonObject jsondata = jsondoc.object();
         QString sstatus, seta;
-        assert(static_cast<size_t>(ar_statuses_keys.count()) <= ar_lbRunDate.size());
-        assert(static_cast<size_t>(ar_statuses_keys.count()) <= ar_lbUpdateTime.size());
-        assert(static_cast<size_t>(ar_statuses_keys.count()) <= ar_lbCurrentJob.size());
 
         for ( int i=0; i< ar_statuses_keys.count(); i++)
         {
-            QJsonObject srvstat_x = jsondata[ ar_statuses_keys[i]  ].toObject();
-            ar_lbRunDate[i]->setText (srvstat_x["reference"].toString());
-            ar_lbUpdateTime[i]->setText (srvstat_x["posted_at"].toString());
-            sstatus = srvstat_x["status"].toString();
+            if (i >= (int)ar_lbRunDate.size() || i >= (int)ar_lbUpdateTime.size() || i >= (int)ar_lbCurrentJob.size()) break;
+            QJsonObject srvstat_x = jsondata[ ar_statuses_keys[i] ].toObject();
+            ar_lbRunDate[i]->setText (srvstat_x["reference"].toString(tr("Direct Access")));
+            ar_lbUpdateTime[i]->setText (srvstat_x["posted_at"].toString(tr("Available")));
+            sstatus = srvstat_x["status"].toString(tr("Online"));
             seta = srvstat_x["eta"].toString();
             if (seta != "")
                 seta = " - ETA: " + seta;
-            if (sstatus == "working")
-                sstatus = tr("Working");
-            if (sstatus == "waiting")
-                sstatus = tr("Waiting");
             ar_lbCurrentJob[i]->setText (sstatus + seta);
         }
     }

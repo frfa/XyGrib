@@ -21,6 +21,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <QStringList>
 #include <QMessageBox>
 #include <QMetaEnum>
+#include <QCoreApplication>
 
 #include "Settings.h"
 #include "Util.h"
@@ -569,18 +570,25 @@ bool Settings::findAppDataDir ()
     }
 
     if (path == "")
-    {	// third option is to look under application current directory
-        dir = QDir::current();
-        DBGQS("Searching in current dir: " + dir.absolutePath());
-        QDir maps = QDir(dir.absolutePath() + "/data/maps");
-        QDir gis = QDir(dir.absolutePath() + "/data/gis");
+    {	// third option is to look under application current directory or parent directories
+        QList<QString> candidateDirs;
+        candidateDirs << QDir::current().absolutePath()
+                      << QDir::current().absolutePath() + "/.."
+                      << QDir::current().absolutePath() + "/../.."
+                      << QCoreApplication::applicationDirPath()
+                      << QCoreApplication::applicationDirPath() + "/.."
+                      << QCoreApplication::applicationDirPath() + "/../..";
 
-        if (maps.exists() && gis.exists()) { // we have the location
-            path = dir.absolutePath();
-            Settings::setUserSetting("appDataDir", path); // store the location in settings
-            DBGQS("Current dir search was good and is: " + path);
-         }
-
+        foreach (const QString &candPath, candidateDirs) {
+            QDir maps(candPath + "/data/maps");
+            QDir gis(candPath + "/data/gis");
+            if (maps.exists() && gis.exists()) {
+                path = QDir(candPath).canonicalPath();
+                Settings::setUserSetting("appDataDir", path);
+                DBGQS("Data path found at: " + path);
+                break;
+            }
+        }
     }
 
     if (path != "") {

@@ -16,22 +16,14 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ***********************************************************************/
 
-/*************************
-
-Download GRIB File on zygrib server
-
-*************************/
-
 #ifndef FILELOADER_GRIB_H
 #define FILELOADER_GRIB_H
 
 #include <QObject>
 #include <QtNetwork>
-#include <QBuffer>
-#include <QJsonDocument>
-
 #include "FileLoader.h"
 #include "Util.h"
+#include "providers/AbstractGribProvider.h"
 
 class FileLoaderGRIB : public QObject, FileLoader
 { Q_OBJECT
@@ -65,41 +57,17 @@ class FileLoaderGRIB : public QObject, FileLoader
             );
         void stop();
         void abort();
-        
+
     private:
-		QString scriptpath;
-		QString scriptname;
-//		QString scriptstock;
-        QByteArray arrayContent;
         QWidget *parent;
-        
-        QString fileName;
-        QString checkSumSHA1;
-        int     step;
-        int     fileSize;
-        //QStrinq strbuf;
-        //QByteArray xserv;
-		
-//        QString zygriblog;
-//        QString zygribpwd;
-
-		QNetworkReply *reply_step1;
-		QNetworkReply *reply_step2;
-		bool downloadError;
-
-    public slots:
-        void downloadProgress (qint64 done, qint64 total);
-		void slotNetworkError (QNetworkReply::NetworkError);
-		void slotFinished_step1 ();
-		void slotFinished_step2 ();
+        AbstractGribProvider *activeProvider;
 
     signals:
-        void signalGribDataReceived (QByteArray *content, QString);
+        void signalGribDataReceived (QByteArray *content, QString fileName);
         void signalGribReadProgress (int step, int done, int total);
         void signalGribSendMessage (QString msg);
         void signalGribStartLoadData ();
         void signalGribLoadError (QString msg);
 };
-
 
 #endif
