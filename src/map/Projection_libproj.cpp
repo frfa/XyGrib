@@ -138,8 +138,9 @@ void Projection_libproj::map2screen(double x, double y, int *i, int *j) const
 	*i =  (int) (W/2.0 + scale * (res.u/111319.0-CX) + 0.5);
 	*j =  (int) (H/2.0 - scale * (res.v/111319.0-CY) + 0.5);
 #else
-	data.uv.v =  y;
-	data.uv.u =  x;
+	// A bare "+proj=..." operation works in radians (unlike CRS-to-CRS
+	// transformations), so convert as the old pj_fwd() path did.
+	data = proj_coord(proj_torad(x), proj_torad(y), 0, 0);
 	res = proj_trans(libProj, PJ_FWD, data);
 	*i =  (int) (W/2.0 + scale * (res.uv.u/111319.0-CX) + 0.5);
 	*j =  (int) (H/2.0 - scale * (res.uv.v/111319.0-CY) + 0.5);
@@ -160,11 +161,11 @@ void Projection_libproj::screen2map(int i, int j, double *x, double *y) const
 	*y = (double)(res.v*RAD_TO_DEG);
 #else
 	PJ_COORD data, res;
-	data.uv.u =  ((i-W/2.0)/scale+ CX)*111319.0 ;
-	data.uv.v =  ((H/2.0-j)/scale+ CY)*111319.0 ;
+	data = proj_coord(((i-W/2.0)/scale+ CX)*111319.0,
+	                  ((H/2.0-j)/scale+ CY)*111319.0, 0, 0);
 	res = proj_trans(libProj, PJ_INV, data);
-	*x = (double)(res.uv.u);
-	*y = (double)(res.uv.v);
+	*x = proj_todeg(res.uv.u);
+	*y = proj_todeg(res.uv.v);
 #endif
 	//printf("PROJ   screen2map (%3d %3d) -> (%f %f)\n", i,j, *x,*y);
 }
