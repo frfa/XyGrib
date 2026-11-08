@@ -1138,7 +1138,7 @@ void DialogLoadGRIB::setWaveSelectors ()
     }
     else if (cbWvModel->currentText() == "WW3")
     {
-        cbResolution->addItem("0.5");
+        cbResolution->addItem("0.25");  // NOAA GFS-Wave global 0.25 deg
         cbDays->addItems(QStringList()<< "1"<<"2"<<"3"<<"4"<<"5"<<"6"<<"7"<<"8");
         ind = Util::getSetting("downloadIndNbDays", 7).toInt();
         ind = Util::inRange(ind, 0, cbDays->count()-1);
@@ -1264,10 +1264,10 @@ void DialogLoadGRIB::slotParameterUpdated ()
 
     // and now the wave estimate
     // recalculate number of points based on which model is used
-    if (waveModel == "WW3") // 0.5 deg
+    if (waveModel == "WW3") // 0.25 deg (NOAA GFS-Wave)
     {
-        npts = (int) (  ceil(fabs(xmax-xmin)/0.5)
-                               * ceil(fabs(ymax-ymin)/0.5) );
+        npts = (int) (  ceil(fabs(xmax-xmin)/0.25)
+                               * ceil(fabs(ymax-ymin)/0.25) );
         nbrec = (int) fmin(8,days)*24/interval +1;
     }
     if (waveModel == "GWAM") // 0.25 deg
@@ -1333,6 +1333,12 @@ void DialogLoadGRIB::slotParameterUpdated ()
     //message if atm model selected but no parameters set
     if (atmEstimate == 0 && cbModel->currentIndex() != 0)
         slotGribMessage(tr("Size: ≃ ") + ssz + tr(" (max 50 MB) - NOTE: No sfc. or alt. parameters are selected!"));
+    //message if a wave model is selected but no wave parameter is ticked
+    else if (cbWvModel->currentIndex() != 0
+             && !chkWaveSig->isChecked()
+             && !chkWaveSwell->isChecked()
+             && !chkWaveWind->isChecked())
+        slotGribMessage(tr("Size: ≃ ") + ssz + tr(" (max 50 MB) - NOTE: No wave parameters are selected!"));
     else
         slotGribMessage(tr("Size: ≃ ") + ssz + tr(" (max 50 MB)"));
     

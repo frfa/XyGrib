@@ -15,7 +15,12 @@ NoaaGfsProvider::NoaaGfsProvider(QNetworkAccessManager *manager, QObject *parent
       totalBytesDownloaded(0),
       currentReply(nullptr),
       currentRangeIndex(0),
-      currentHour(0)
+      currentHour(0),
+      atmRequested(true),
+      waveRequested(false),
+      inWavePhase(false),
+      waveStepIndex(0),
+      waveFilesOk(0)
 {
 }
 
@@ -49,6 +54,33 @@ void NoaaGfsProvider::startDownload(const GribRequestParams &params)
     currentStepIndex = 0;
     usingNomadsFilter = true;
     usingFallback = false;
+    inWavePhase = false;
+    waveStepIndex = 0;
+    waveFilesOk = 0;
+    waveNote.clear();
+
+    // The only wave source available without the legacy server is NOAA GFS-Wave,
+    // which is a WAVEWATCH III run: it is what the "WW3" entry maps to.
+    // GWAM and EWAM (DWD) have no direct downloader yet.
+    if (params.wvModel == "GWAM" || params.wvModel == "EWAM") {
+        emit signalGribLoadError(tr(
+            "The %1 wave model has no direct download source yet.\n\n"
+            "Please select 'WW3' (NOAA GFS-Wave) instead.").arg(params.wvModel));
+        return;
+    }
+
+    atmRequested = (params.atmModel != "None");
+    bool waveParams = params.sgwh || params.swell || params.wwav;
+    waveRequested = (params.wvModel == "WW3") && waveParams;
+
+    // WW3 selected but none of the wave checkboxes ticked: nothing to download
+    if (params.wvModel == "WW3" && !waveParams) {
+        if (!atmRequested) {
+            emit signalGribLoadError(tr("No wave parameters are selected."));
+            return;
+        }
+        waveNote = tr("No wave parameters selected: wave data skipped");
+    }
 
     // Build forecast hours list
     forecastHours.clear();
@@ -56,6 +88,11 @@ void NoaaGfsProvider::startDownload(const GribRequestParams &params)
     int stepInt = params.interval > 0 ? params.interval : 3;
     for (int h = 0; h <= maxHours; h += stepInt) {
         forecastHours.append(h);
+    }
+
+    // Wave only: skip the atmospheric phase and go straight to GFS-Wave
+    if (!atmRequested) {
+        currentStepIndex = forecastHours.size();
     }
 
     emit signalGribSendMessage(tr("Checking latest NOAA cycle..."));
@@ -99,15 +136,17 @@ void NoaaGfsProvider::processNextStep()
     if (isAborted) return;
 
     if (currentStepIndex >= forecastHours.size()) {
-        // Download complete
-        if (accumulatedGribData.isEmpty()) {
-            emit signalGribLoadError(tr("No data downloaded from NOAA provider."));
+        // Atmospheric phase complete. Wave data follows on the same cycle,
+        // unless the atmosphere produced nothing (then it is reported as an error).
+        if (waveRequested && !inWavePhase
+                && (!atmRequested || !accumulatedGribData.isEmpty())) {
+            inWavePhase = true;
+            waveStepIndex = 0;
+            waveFilesOk = 0;
+            processNextWaveStep();
             return;
         }
-
-        QString outFileName = QString("gfs_%1_%2z.grb2").arg(cycleDate).arg(cycleHour);
-        emit signalGribSendMessage(tr("Finished downloading %1 KB").arg(accumulatedGribData.size() / 1024));
-        emit signalGribDataReceived(&accumulatedGribData, outFileName);
+        finishDownload();
         return;
     }
 
@@ -456,4 +495,159 @@ void NoaaGfsProvider::signalGribByteChunkFinished()
 
     currentRangeIndex++;
     fetchByteRangesForStep(currentHour, pendingRanges);
+}
+
+// ---------------------------------------------------------------------------
+// GFS-Wave (NOAA WAVEWATCH III) through the NOMADS wave filter
+// ---------------------------------------------------------------------------
+
+QUrl NoaaGfsProvider::buildWaveFilterUrl(int hour)
+{
+    QString hourStr = QString("%1").arg(hour, 3, 10, QChar('0'));
+    QString fileName = QString("gfswave.t%1z.global.0p25.f%2.grib2").arg(cycleHour).arg(hourStr);
+    QString dirPath = QString("/gfs.%1/%2/wave/gridded").arg(cycleDate).arg(cycleHour);
+
+    QUrlQuery query;
+    query.addQueryItem("dir", dirPath);
+    query.addQueryItem("file", fileName);
+
+    // All variables and levels, as in xygrib-noaa.sh: the wave filter returns the
+    // swell partitions encoded with typeOfFirstFixedSurface = 241 and XyGrib keeps
+    // only the records it knows how to display.
+    query.addQueryItem("all_var", "on");
+    query.addQueryItem("all_lev", "on");
+
+    // Subregion bounds clipping
+    query.addQueryItem("subregion", "");
+    query.addQueryItem("toplat", QString::number(requestParams.y1, 'f', 2));
+    query.addQueryItem("bottomlat", QString::number(requestParams.y0, 'f', 2));
+    query.addQueryItem("leftlon", QString::number(requestParams.x0, 'f', 2));
+    query.addQueryItem("rightlon", QString::number(requestParams.x1, 'f', 2));
+
+    QUrl url("https://nomads.ncep.noaa.gov/cgi-bin/filter_gfswave.pl");
+    url.setQuery(query);
+    return url;
+}
+
+void NoaaGfsProvider::processNextWaveStep()
+{
+    if (isAborted) return;
+
+    if (waveStepIndex >= forecastHours.size()) {
+        finishDownload();
+        return;
+    }
+
+    currentHour = forecastHours[waveStepIndex];
+    int percent = (waveStepIndex * 100) / forecastHours.size();
+
+    emit signalGribSendMessage(tr("Fetching NOAA GFS-Wave (+%1h, bounded area)...").arg(currentHour));
+    emit signalGribReadProgress(1, percent, 100);
+
+    QNetworkRequest request = Util::makeNetworkRequest(buildWaveFilterUrl(currentHour).toString());
+    if (currentReply) {
+        currentReply->deleteLater();
+    }
+    currentReply = networkManager->get(request);
+    connect(currentReply, SIGNAL(finished()), this, SLOT(slotWaveStepFinished()));
+}
+
+void NoaaGfsProvider::slotWaveStepFinished()
+{
+    if (isAborted) return;
+
+    // Three outcomes, reported differently to the user:
+    //  - WaveStepOk     : a GRIB message was received
+    //  - WaveStepEnd    : the file is not there (HTTP 404, or NOMADS answering with a
+    //                     non-GRIB body): not published yet, or end of the published horizon
+    //  - WaveStepFailed : anything else (network error, timeout, HTTP 5xx...)
+    enum WaveStepOutcome { WaveStepOk, WaveStepEnd, WaveStepFailed };
+    WaveStepOutcome outcome = WaveStepFailed;
+    QString failure = tr("no reply");
+
+    if (currentReply) {
+        int httpCode = currentReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        QNetworkReply::NetworkError netError = currentReply->error();
+
+        if (netError == QNetworkReply::NoError) {
+            QByteArray chunk = currentReply->readAll();
+            // NOMADS can answer 200 with an HTML message when the file is not there
+            if (chunk.size() >= 4 && chunk.startsWith("GRIB")) {
+                accumulatedGribData.append(chunk);
+                totalBytesDownloaded += chunk.size();
+                waveFilesOk++;
+                outcome = WaveStepOk;
+
+                emit signalGribReadProgress(2, accumulatedGribData.size(), accumulatedGribData.size() + 1024);
+                emit signalGribSendMessage(tr("Downloaded %1 KB (wave step %2/%3)...")
+                                              .arg(totalBytesDownloaded / 1024)
+                                              .arg(waveStepIndex + 1)
+                                              .arg(forecastHours.size()));
+            } else {
+                outcome = WaveStepEnd;
+            }
+        } else if (httpCode == 404 || netError == QNetworkReply::ContentNotFoundError) {
+            outcome = WaveStepEnd;
+        } else {
+            failure = (httpCode > 0) ? tr("HTTP error %1").arg(httpCode)
+                                     : currentReply->errorString();
+        }
+        currentReply->deleteLater();
+        currentReply = nullptr;
+    }
+
+    if (outcome == WaveStepOk) {
+        waveStepIndex++;
+        processNextWaveStep();
+        return;
+    }
+
+    // The wave phase stops here. What was already received is kept, and the
+    // cycle is never mixed with another one (same policy as xygrib-noaa.sh).
+    if (waveFilesOk > 0) {
+        int lastOk = forecastHours[waveStepIndex - 1];
+        if (outcome == WaveStepEnd)
+            waveNote = tr("GFS-Wave is published only up to +%1h (requested +%2h)")
+                           .arg(lastOk).arg(forecastHours.last());
+        else
+            waveNote = tr("GFS-Wave download interrupted after +%1h (%2)")
+                           .arg(lastOk).arg(failure);
+    } else {
+        if (outcome == WaveStepEnd)
+            waveNote = tr("GFS-Wave is not available for the %1z cycle of %2")
+                           .arg(cycleHour).arg(cycleDate);
+        else
+            waveNote = tr("GFS-Wave download failed (%1)").arg(failure);
+    }
+    finishDownload();
+}
+
+void NoaaGfsProvider::finishDownload()
+{
+    if (accumulatedGribData.isEmpty()) {
+        if (atmRequested) {
+            emit signalGribLoadError(tr("No data downloaded from NOAA provider."));
+        } else {
+            QString msg = tr("No GFS-Wave data downloaded from NOAA provider.");
+            if (!waveNote.isEmpty())
+                msg += "\n\n" + waveNote + ".";
+            msg += tr(" Try again later.");
+            emit signalGribLoadError(msg);
+        }
+        return;
+    }
+
+    QString prefix = "gfs";
+    if (waveFilesOk > 0)
+        prefix = atmRequested ? "gfs_ww3" : "gfswave";
+
+    QString outFileName = QString("%1_%2_%3z.grb2").arg(prefix).arg(cycleDate).arg(cycleHour);
+
+    // The wave note goes in the final message: a message emitted earlier would be
+    // replaced by this one before the user could read it.
+    QString doneMsg = tr("Finished downloading %1 KB").arg(accumulatedGribData.size() / 1024);
+    if (!waveNote.isEmpty())
+        doneMsg += " - " + waveNote + ".";
+    emit signalGribSendMessage(doneMsg);
+    emit signalGribDataReceived(&accumulatedGribData, outFileName);
 }

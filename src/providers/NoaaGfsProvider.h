@@ -30,6 +30,7 @@ private slots:
     void slotNomadsStepFinished();
     void slotIdxFinished();
     void signalGribByteChunkFinished();
+    void slotWaveStepFinished();
 
 private:
     void resolveCycleAndStart();
@@ -39,6 +40,13 @@ private:
     void fetchByteRangesForStep(int hour, const QVector<ByteRange> &ranges);
     bool isVariableRequested(const QString &var, const QString &level);
     QUrl buildNomadsFilterUrl(int hour);
+
+    // GFS-Wave (WAVEWATCH III driven by GFS) through the NOMADS wave filter.
+    // Runs after the atmospheric steps, on the same cycle, and appends its
+    // GRIB2 messages to the same buffer (single file for XyGrib).
+    void processNextWaveStep();
+    QUrl buildWaveFilterUrl(int hour);
+    void finishDownload();
 
     GribRequestParams requestParams;
     QString cycleDate; // YYYYMMDD
@@ -56,6 +64,13 @@ private:
     QVector<ByteRange> pendingRanges;
     int currentRangeIndex;
     int currentHour;
+
+    bool atmRequested;   // an atmospheric model was selected
+    bool waveRequested;  // GFS-Wave data was selected
+    bool inWavePhase;
+    int waveStepIndex;
+    int waveFilesOk;     // wave steps actually received
+    QString waveNote;    // why wave data is missing or incomplete (shown to the user)
 };
 
 #endif // NOAA_GFS_PROVIDER_H
