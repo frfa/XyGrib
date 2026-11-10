@@ -138,7 +138,10 @@ QUrl NoaaGfsProvider::buildNomadsFilterUrl(int hour)
     }
 
     QString hourStr = QString("%1").arg(hour, 3, 10, QChar('0'));
-    QString fileName = QString("gfs.t%1z.pgrb2.%2.f%3").arg(cycleHour).arg(resStr).arg(hourStr);
+    // The 0.50 deg GFS is published as "pgrb2full": the NOMADS filter rejects
+    // "pgrb2" for it with HTTP 500 ("Filename does not match legal pattern").
+    QString gfsFile = (resStr == "0p50") ? "pgrb2full" : "pgrb2";
+    QString fileName = QString("gfs.t%1z.%2.%3.f%4").arg(cycleHour).arg(gfsFile).arg(resStr).arg(hourStr);
     QString dirPath = QString("/gfs.%1/%2/atmos").arg(cycleDate).arg(cycleHour);
 
     QUrlQuery query;
