@@ -241,6 +241,14 @@ QUrl NoaaGfsProvider::buildNomadsFilterUrl(int hour)
         query.addQueryItem("var_SNOD", "on");
         query.addQueryItem("lev_surface", "on");
     }
+    if (requestParams.snowCateg) {
+        query.addQueryItem("var_CSNOW", "on");
+        query.addQueryItem("lev_surface", "on");
+    }
+    if (requestParams.frzRainCateg) {
+        query.addQueryItem("var_CFRZR", "on");
+        query.addQueryItem("lev_surface", "on");
+    }
 
     // Isobaric Levels
     bool hasIsobaric = false;
