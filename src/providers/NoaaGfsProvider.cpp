@@ -49,6 +49,7 @@ void NoaaGfsProvider::startDownload(const GribRequestParams &params)
 {
     requestParams = params;
     isAborted = false;
+    downloadGeneration++;   // drop requests still waiting from a previous download
     accumulatedGribData.clear();
     totalBytesDownloaded = 0;
     currentStepIndex = 0;
@@ -154,7 +155,6 @@ void NoaaGfsProvider::processNextStep()
     int percent = (currentStepIndex * 100) / forecastHours.size();
     
     if (usingNomadsFilter) {
-        emit signalGribSendMessage(tr("Fetching NOAA NOMADS GRIB filter (+%1h, bounded area)...").arg(currentHour));
         emit signalGribReadProgress(1, percent, 100);
         fetchNomadsForStep(currentHour);
     } else {
@@ -277,20 +277,52 @@ QUrl NoaaGfsProvider::buildNomadsFilterUrl(int hour)
     return url;
 }
 
-void NoaaGfsProvider::fetchNomadsForStep(int hour)
+// Single exit point towards NOMADS: waits for whatever is left of the pause, then requests.
+// While waiting it reports the countdown; when done it emits fetchMsg.
+void NoaaGfsProvider::nomadsGet(const QUrl &url, void (NoaaGfsProvider::*slot)(), const QString &fetchMsg)
 {
-    QUrl nomadsUrl = buildNomadsFilterUrl(hour);
+    nomadsTick(url, slot, downloadGeneration, fetchMsg);
+}
 
-    QNetworkRequest request = Util::makeNetworkRequest(nomadsUrl.toString());
+// One step of the wait. Re-reads the lastNomadsEnd clock on every tick (no drift)
+// and re-arms itself with singleShot, so there is no QTimer object to free.
+void NoaaGfsProvider::nomadsTick(const QUrl &url, void (NoaaGfsProvider::*slot)(), int gen, const QString &fetchMsg)
+{
+    // aborted, or restarted, while waiting: leave without emitting anything
+    if (isAborted || gen != downloadGeneration) return;
+
+    int remaining = 0;
+    if (lastNomadsEnd.isValid())
+        remaining = kNomadsPauseMs - (int) lastNomadsEnd.elapsed();
+
+    if (remaining > 0) {
+        emit signalGribSendMessage(tr("Waiting %1 s (NOMADS policy)...").arg((remaining + 999) / 1000));
+        QTimer::singleShot(qMin(remaining, 1000), this, [this, url, slot, gen, fetchMsg]() {
+            nomadsTick(url, slot, gen, fetchMsg);
+        });
+        return;
+    }
+
+    emit signalGribSendMessage(fetchMsg);
+    QNetworkRequest request = Util::makeNetworkRequest(url.toString());
     if (currentReply) {
         currentReply->deleteLater();
     }
     currentReply = networkManager->get(request);
-    connect(currentReply, SIGNAL(finished()), this, SLOT(slotNomadsStepFinished()));
+    connect(currentReply, &QNetworkReply::finished, this, slot);
+}
+
+void NoaaGfsProvider::fetchNomadsForStep(int hour)
+{
+    QUrl nomadsUrl = buildNomadsFilterUrl(hour);
+
+    nomadsGet(nomadsUrl, &NoaaGfsProvider::slotNomadsStepFinished,
+              tr("Fetching NOAA NOMADS GRIB filter (+%1h, bounded area)...").arg(hour));
 }
 
 void NoaaGfsProvider::slotNomadsStepFinished()
 {
+    lastNomadsEnd.start();
     if (isAborted) return;
 
     if (currentReply && currentReply->error() == QNetworkReply::NoError) {
@@ -552,19 +584,15 @@ void NoaaGfsProvider::processNextWaveStep()
     currentHour = forecastHours[waveStepIndex];
     int percent = (waveStepIndex * 100) / forecastHours.size();
 
-    emit signalGribSendMessage(tr("Fetching NOAA GFS-Wave (+%1h, bounded area)...").arg(currentHour));
     emit signalGribReadProgress(1, percent, 100);
 
-    QNetworkRequest request = Util::makeNetworkRequest(buildWaveFilterUrl(currentHour).toString());
-    if (currentReply) {
-        currentReply->deleteLater();
-    }
-    currentReply = networkManager->get(request);
-    connect(currentReply, SIGNAL(finished()), this, SLOT(slotWaveStepFinished()));
+    nomadsGet(buildWaveFilterUrl(currentHour), &NoaaGfsProvider::slotWaveStepFinished,
+              tr("Fetching NOAA GFS-Wave (+%1h, bounded area)...").arg(currentHour));
 }
 
 void NoaaGfsProvider::slotWaveStepFinished()
 {
+    lastNomadsEnd.start();
     if (isAborted) return;
 
     // Three outcomes, reported differently to the user:
