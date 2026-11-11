@@ -286,7 +286,12 @@ void DialogLoadGRIB::slotGribStartLoadData()
 //----------------------------------------------------
 void DialogLoadGRIB::slotGribReadProgress(int step, int done, int total)
 {
-    if (step < 2) {
+    if (step == 1 && total == 100) {
+        // Percentage progress (NoaaGfsProvider): done is 0..100
+        progressBar->setRange(0,100);
+        progressBar->setValue(done);
+    }
+    else if (step < 2) {
         progressBar->setRange(0,1000);
         progressBar->setValue(step);
     }
