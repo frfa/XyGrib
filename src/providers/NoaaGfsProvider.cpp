@@ -297,6 +297,15 @@ void NoaaGfsProvider::nomadsTick(const QUrl &url, void (NoaaGfsProvider::*slot)(
 
     if (remaining > 0) {
         emit signalGribSendMessage(tr("Waiting %1 s (NOMADS policy)...").arg((remaining + 999) / 1000));
+
+        // Keep the bar moving during the wait: step in flight plus the share of
+        // the pause already elapsed, as a percentage of the current phase.
+        const int nSteps = forecastHours.size();
+        if (nSteps > 0) {
+            const int stepNow = inWavePhase ? waveStepIndex : currentStepIndex;
+            const double frac = 1.0 - double(remaining) / double(kNomadsPauseMs);
+            emit signalGribReadProgress(1, int(100.0 * (stepNow + frac) / nSteps), 100);
+        }
         QTimer::singleShot(qMin(remaining, 1000), this, [this, url, slot, gen, fetchMsg]() {
             nomadsTick(url, slot, gen, fetchMsg);
         });
